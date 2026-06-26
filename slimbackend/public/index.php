@@ -54,6 +54,22 @@ function jsonResponse(Response $response, $data, int $status = 200): Response
         ->withStatus($status);
 }
 
+function removeSensitiveFields(?array $data): ?array
+{
+    if (!$data) {
+        return null;
+    }
+
+    unset($data['password'], $data['password_hash']);
+
+    return $data;
+}
+
+function publicUser(?array $user): ?array
+{
+    return removeSensitiveFields($user);
+}
+
 //
 function getRequestData(Request $request): array
 {
@@ -160,14 +176,14 @@ $app->post('/api/register', function (Request $request, Response $response) {
         $pdo->exec($sql);
         $id = $pdo->lastInsertId();
 
-        // INSECURE: returns password/password_hash.
-        $user = $pdo->query("SELECT * FROM users WHERE id = $id")->fetch();
+        $stmt = $pdo->prepare("SELECT id, name, email, role, created_at FROM users WHERE id = :id");
+        $stmt->execute([':id' => $id]);
+        $user = $stmt->fetch();
 
         return jsonResponse($response, [
-            'message' => 'User registered. This route is intentionally insecure.',
-            'user' => $user,
-            'debug_received_body' => $data,
-            'debug_sql' => $sql
+            'message' => 'User registered.',
+            'user' => publicUser($user),
+            'debug_received_body' => removeSensitiveFields($data)
         ], 201);
     } catch (Throwable $e) {
         return exposeException($response, $e);
@@ -185,19 +201,21 @@ $app->post('/api/login', function (Request $request, Response $response) {
         $email = $data['email'] ?? '';
         $password = $data['password'] ?? '';
 
-        // INSECURE:
-        // - SQL Injection risk.
-        // - Plain password check.
-        // - No password_hash/password_verify.
-        // Example test: email = ali@example.com' --
-        $sql = "SELECT * FROM users WHERE email = '$email' AND password = '$password' LIMIT 1";
-        $user = $pdo->query($sql)->fetch();
+        $sql = "SELECT id, name, email, role, created_at
+                FROM users
+                WHERE email = :email AND password = :password
+                LIMIT 1";
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute([
+            ':email' => $email,
+            ':password' => $password
+        ]);
+        $user = $stmt->fetch();
 
         if (!$user) {
             return jsonResponse($response, [
                 'error' => 'Invalid login',
-                'debug_received_body' => $data,
-                'debug_sql' => $sql
+                'debug_received_body' => removeSensitiveFields($data)
             ], 401);
         }
 
@@ -205,11 +223,10 @@ $app->post('/api/login', function (Request $request, Response $response) {
         $token = createFakeToken($user);
 
         return jsonResponse($response, [
-            'message' => 'Login successful. This token is intentionally insecure.',
+            'message' => 'Login successful.',
             'token' => $token,
-            'user' => $user, // INSECURE: exposes all user fields.
-            'debug_received_body' => $data,
-            'debug_sql' => $sql
+            'user' => publicUser($user),
+            'debug_received_body' => removeSensitiveFields($data)
         ]);
     } catch (Throwable $e) {
         return exposeException($response, $e);
@@ -229,8 +246,9 @@ $app->get('/api/profile', function (Request $request, Response $response) {
         $fakeUser = getFakeUserFromToken($request);
         $userId = $fakeUser['user_id'] ?? 1;
 
-        // INSECURE: SELECT * returns password/password_hash.
-        $user = $pdo->query("SELECT * FROM users WHERE id = $userId")->fetch();
+        $stmt = $pdo->prepare("SELECT id, name, email, role, created_at FROM users WHERE id = :id");
+        $stmt->execute([':id' => $userId]);
+        $user = $stmt->fetch();
 
         return jsonResponse($response, [
             'message' => 'Profile returned. This route trusts insecure token/default user.',
@@ -470,14 +488,12 @@ $app->get('/api/admin/users', function (Request $request, Response $response) {
     try {
         $pdo = getPDO();
 
-        // INSECURE:
-        // - No admin role check.
-        // - SELECT * exposes password/password_hash.
-        $sql = "SELECT * FROM users ORDER BY id ASC";
+        // INSECURE: No admin role check.
+        $sql = "SELECT id, name, email, role, created_at FROM users ORDER BY id ASC";
         $users = $pdo->query($sql)->fetchAll();
 
         return jsonResponse($response, [
-            'message' => 'All users returned without admin role check. Sensitive fields exposed.',
+            'message' => 'All users returned without admin role check.',
             'users' => $users,
             'debug_sql' => $sql
         ]);
@@ -497,7 +513,9 @@ $app->put('/api/admin/users/{id}/role', function (Request $request, Response $re
         $sql = "UPDATE users SET role = '$role' WHERE id = $id";
         $pdo->exec($sql);
 
-        $user = $pdo->query("SELECT * FROM users WHERE id = $id")->fetch();
+        $stmt = $pdo->prepare("SELECT id, name, email, role, created_at FROM users WHERE id = :id");
+        $stmt->execute([':id' => $id]);
+        $user = $stmt->fetch();
 
         return jsonResponse($response, [
             'message' => 'User role changed without admin verification.',
