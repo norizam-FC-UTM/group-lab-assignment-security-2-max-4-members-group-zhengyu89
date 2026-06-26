@@ -3,7 +3,7 @@
         'name' => 'secj3483/person-bmi-slim-insecure-backend',
         'pretty_version' => 'dev-main',
         'version' => 'dev-main',
-        'reference' => '5310a4e848c3033508eade7a502658ca0ace8c13',
+        'reference' => 'df759dbe5984e6771c309a13972d7d7238dd617e',
         'type' => 'project',
         'install_path' => __DIR__ . '/../../',
         'aliases' => array(),
@@ -106,7 +106,7 @@
         'secj3483/person-bmi-slim-insecure-backend' => array(
             'pretty_version' => 'dev-main',
             'version' => 'dev-main',
-            'reference' => '5310a4e848c3033508eade7a502658ca0ace8c13',
+            'reference' => 'df759dbe5984e6771c309a13972d7d7238dd617e',
             'type' => 'project',
             'install_path' => __DIR__ . '/../../',
             'aliases' => array(),

@@ -148,6 +148,28 @@ function exposeException(Response $response, Throwable $e): Response
     ], 500);
 }
 
+function calculateBmi(float $height, float $weight): float
+{
+    return round($weight / ($height * $height), 2);
+}
+
+function getBmiCategory(float $bmi): string
+{
+    if ($bmi < 18.5) {
+        return 'Underweight';
+    }
+
+    if ($bmi < 25) {
+        return 'Normal';
+    }
+
+    if ($bmi < 30) {
+        return 'Overweight';
+    }
+
+    return 'Obese';
+}
+
 // ----------------------------------------------------------
 // Root routes 
 // ----------------------------------------------------------
@@ -426,38 +448,45 @@ $app->put('/api/persons/{id}', function (Request $request, Response $response, a
         $id = $args['id'];
         $data = getRequestData($request);
 
-        // INSECURE MASS ASSIGNMENT:
-        // Updates almost any field sent by the frontend.
-        // You should whitelist allowed fields and calculate bmi/category at backend.
-        $allowedInInsecureStarter = [
-            'user_id',
-            'name',
-            'age',
-            'height',
-            'weight',
-            'bmi',
-            'category',
-            'notes'
-        ];
+        $allowedFields = ['name', 'age', 'height', 'weight', 'notes'];
+        $cleanData = [];
+
+        foreach ($allowedFields as $field) {
+            if (array_key_exists($field, $data)) {
+                $cleanData[$field] = $data[$field];
+            }
+        }
+
+        if (array_key_exists('height', $cleanData) || array_key_exists('weight', $cleanData)) {
+            $currentPerson = $pdo->query("SELECT * FROM persons WHERE id = $id")->fetch();
+            $height = array_key_exists('height', $cleanData)
+                ? (float) $cleanData['height']
+                : (float) ($currentPerson['height'] ?? 0);
+            $weight = array_key_exists('weight', $cleanData)
+                ? (float) $cleanData['weight']
+                : (float) ($currentPerson['weight'] ?? 0);
+
+            if ($height > 0 && $weight > 0) {
+                $bmi = calculateBmi($height, $weight);
+                $cleanData['bmi'] = $bmi;
+                $cleanData['category'] = getBmiCategory($bmi);
+            }
+        }
 
         $sets = [];
 
-        foreach ($allowedInInsecureStarter as $field) {
-            if (array_key_exists($field, $data)) {
-                $value = $data[$field];
-
-                if (is_numeric($value)) {
-                    $sets[] = "$field = $value";
-                } else {
-                    $escaped = str_replace("'", "''", (string) $value);
-                    $sets[] = "$field = '$escaped'";
-                }
+        foreach ($cleanData as $field => $value) {
+            if (is_numeric($value)) {
+                $sets[] = "$field = $value";
+            } else {
+                $escaped = str_replace("'", "''", (string) $value);
+                $sets[] = "$field = '$escaped'";
             }
         }
 
         if (!$sets) {
             return jsonResponse($response, [
-                'error' => 'No fields to update',
+                'error' => 'No allowed fields to update',
                 'debug_received_body' => $data
             ], 400);
         }
@@ -468,7 +497,7 @@ $app->put('/api/persons/{id}', function (Request $request, Response $response, a
         $person = $pdo->query("SELECT * FROM persons WHERE id = $id")->fetch();
 
         return jsonResponse($response, [
-            'message' => 'BMI record updated. This route allows unsafe field updates.',
+            'message' => 'BMI record updated.',
             'person' => $person,
             'debug_received_body' => $data,
             'debug_sql' => $sql
