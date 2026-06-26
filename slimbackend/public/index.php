@@ -108,6 +108,36 @@ function getFakeUserFromToken(Request $request): ?array
     return is_array($payload) ? $payload : null;
 }
 
+function getRequiredUserFromToken(Request $request, Response $response): array|Response
+{
+    $fakeUser = getFakeUserFromToken($request);
+
+    if (!$fakeUser || empty($fakeUser['user_id'])) {
+        return jsonResponse($response, [
+            'error' => 'Authentication required'
+        ], 401);
+    }
+
+    return $fakeUser;
+}
+
+function bmiCategory(float $bmi): string
+{
+    if ($bmi < 18.5) {
+        return 'Underweight';
+    }
+
+    if ($bmi < 25) {
+        return 'Normal';
+    }
+
+    if ($bmi < 30) {
+        return 'Overweight';
+    }
+
+    return 'Obese';
+}
+
 function exposeException(Response $response, Throwable $e): Response
 {
     // INSECURE: exposes detailed internal error to API client.
@@ -279,33 +309,73 @@ $app->post('/api/persons', function (Request $request, Response $response) {
         $pdo = getPDO();
         $data = getRequestData($request);
 
-        // INSECURE:
-        // - No backend validation.
-        // - Trusts user_id from frontend.
-        // - Trusts bmi and category from frontend.
-        // - Does not calculate BMI at backend.
-        $user_id = $data['user_id'] ?? 1;
-        $name = $data['name'] ?? '';
-        $age = $data['age'] ?? 0;
-        $height = $data['height'] ?? 0;
-        $weight = $data['weight'] ?? 0;
-        $bmi = $data['bmi'] ?? 0;
-        $category = $data['category'] ?? '';
-        $notes = $data['notes'] ?? '';
+        $fakeUser = getRequiredUserFromToken($request, $response);
+        if ($fakeUser instanceof Response) {
+            return $fakeUser;
+        }
 
-        $sql = "INSERT INTO persons (user_id, name, age, height, weight, bmi, category, notes)
-                VALUES ($user_id, '$name', $age, $height, $weight, $bmi, '$category', '$notes')";
+        $name = trim((string) ($data['name'] ?? ''));
+        $age = $data['age'] ?? null;
+        $height = $data['height'] ?? null;
+        $weight = $data['weight'] ?? null;
+        $notes = trim((string) ($data['notes'] ?? ''));
 
-        $pdo->exec($sql);
+        $errors = [];
+
+        if ($name === '') {
+            $errors['name'] = 'Name is required.';
+        }
+
+        if (!is_numeric($age) || (int) $age < 1 || (int) $age > 120) {
+            $errors['age'] = 'Age must be between 1 and 120.';
+        }
+
+        if (!is_numeric($height) || (float) $height < 0.5 || (float) $height > 2.5) {
+            $errors['height'] = 'Height must be between 0.5 and 2.5 meters.';
+        }
+
+        if (!is_numeric($weight) || (float) $weight < 2 || (float) $weight > 300) {
+            $errors['weight'] = 'Weight must be between 2 and 300 kg.';
+        }
+
+        if ($errors) {
+            return jsonResponse($response, [
+                'error' => 'Invalid BMI data',
+                'validation_errors' => $errors
+            ], 400);
+        }
+
+        $age = (int) $age;
+        $height = (float) $height;
+        $weight = (float) $weight;
+        $bmi = round($weight / ($height * $height), 2);
+        $category = bmiCategory($bmi);
+        $user_id = (int) $fakeUser['user_id'];
+
+        $stmt = $pdo->prepare(
+            "INSERT INTO persons (user_id, name, age, height, weight, bmi, category, notes)
+             VALUES (:user_id, :name, :age, :height, :weight, :bmi, :category, :notes)"
+        );
+        $stmt->execute([
+            ':user_id' => $user_id,
+            ':name' => $name,
+            ':age' => $age,
+            ':height' => $height,
+            ':weight' => $weight,
+            ':bmi' => $bmi,
+            ':category' => $category,
+            ':notes' => $notes
+        ]);
         $id = $pdo->lastInsertId();
 
-        $person = $pdo->query("SELECT * FROM persons WHERE id = $id")->fetch();
+        $stmt = $pdo->prepare("SELECT * FROM persons WHERE id = :id");
+        $stmt->execute([':id' => $id]);
+        $person = $stmt->fetch();
 
         return jsonResponse($response, [
-            'message' => 'BMI record created. This route trusts frontend data.',
+            'message' => 'BMI record created after backend validation.',
             'person' => $person,
-            'debug_received_body' => $data,
-            'debug_sql' => $sql
+            'debug_received_body' => $data
         ], 201);
     } catch (Throwable $e) {
         return exposeException($response, $e);
@@ -315,20 +385,35 @@ $app->post('/api/persons', function (Request $request, Response $response) {
 $app->get('/api/persons/{id}', function (Request $request, Response $response, array $args) {
     try {
         $pdo = getPDO();
-        $id = $args['id'];
+        $id = (int) $args['id'];
 
-        // TODO: Review whether this route should allow all users to access any record.
-        $sql = "SELECT * FROM persons WHERE id = $id";
-        $person = $pdo->query($sql)->fetch();
+        $fakeUser = getRequiredUserFromToken($request, $response);
+        if ($fakeUser instanceof Response) {
+            return $fakeUser;
+        }
+
+        $userId = (int) $fakeUser['user_id'];
+        $role = $fakeUser['role'] ?? 'user';
+
+        $stmt = $pdo->prepare("SELECT * FROM persons WHERE id = :id");
+        $stmt->execute([':id' => $id]);
+        $person = $stmt->fetch();
 
         if (!$person) {
             return jsonResponse($response, ['error' => 'Record not found'], 404);
         }
 
+        $canAccess = (int) $person['user_id'] === $userId || in_array($role, ['staff', 'admin'], true);
+
+        if (!$canAccess) {
+            return jsonResponse($response, [
+                'error' => 'Access denied'
+            ], 403);
+        }
+
         return jsonResponse($response, [
-            'message' => 'Record returned without ownership check.',
-            'person' => $person,
-            'debug_sql' => $sql
+            'message' => 'Record returned after ownership/role check.',
+            'person' => $person
         ]);
     } catch (Throwable $e) {
         return exposeException($response, $e);
