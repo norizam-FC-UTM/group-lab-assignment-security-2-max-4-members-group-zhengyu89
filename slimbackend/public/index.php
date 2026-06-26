@@ -416,9 +416,18 @@ $app->delete('/api/persons/{id}', function (Request $request, Response $response
 // ----------------------------------------------------------
 $app->get('/api/staff/persons', function (Request $request, Response $response) {
     try {
+        $fakeUser = getFakeUserFromToken($request);
+
+        if (!$fakeUser) {
+            return jsonResponse($response, ['error' => 'Authentication required'], 401);
+        }
+
+        if (!in_array($fakeUser['role'] ?? '', ['staff', 'admin'], true)) {
+            return jsonResponse($response, ['error' => 'Forbidden: staff role required'], 403);
+        }
+
         $pdo = getPDO();
 
-        // INSECURE: No staff/admin role check.
         $sql = "SELECT persons.*, users.email AS owner_email, users.role AS owner_role
                 FROM persons
                 JOIN users ON persons.user_id = users.id
@@ -468,10 +477,19 @@ $app->get('/api/staff/persons/{id}', function (Request $request, Response $respo
 // ----------------------------------------------------------
 $app->get('/api/admin/users', function (Request $request, Response $response) {
     try {
+        $fakeUser = getFakeUserFromToken($request);
+
+        if (!$fakeUser) {
+            return jsonResponse($response, ['error' => 'Authentication required'], 401);
+        }
+
+        if (($fakeUser['role'] ?? '') !== 'admin') {
+            return jsonResponse($response, ['error' => 'Forbidden: admin role required'], 403);
+        }
+
         $pdo = getPDO();
 
         // INSECURE:
-        // - No admin role check.
         // - SELECT * exposes password/password_hash.
         $sql = "SELECT * FROM users ORDER BY id ASC";
         $users = $pdo->query($sql)->fetchAll();
